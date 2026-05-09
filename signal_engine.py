@@ -4,6 +4,7 @@ from config import config
 from indicators import get_indicator_snapshot
 from market_context import get_market_context
 from market_data import get_latest_quote
+from relative_strength import get_relative_strength_snapshot
 from sentiment_engine import get_sentiment_snapshot
 
 
@@ -245,7 +246,93 @@ def apply_liquidity_checks(score: float, quote: dict, breakdown: dict, reasons: 
     return score
 
 
-def score_long_setup(data: dict, context: dict, sentiment: dict, quote: dict) -> tuple[float, list[str], list[str], dict]:
+def apply_relative_strength_to_long(score: float, rs: dict, breakdown: dict, reasons: list, risks: list) -> float:
+    rs_score = float(rs.get("rs_score", 0.0))
+    market_label = rs.get("market_relative_label", "unknown")
+    sector_label = rs.get("sector_relative_label", "unknown")
+    summary = rs.get("relative_strength_summary", "unknown")
+
+    if rs_score >= 0.20:
+        score += 0.12
+        breakdown["relative_strength"] += 0.12
+        reasons.append(f"Strong relative strength: {summary}")
+    elif rs_score >= 0.10:
+        score += 0.07
+        breakdown["relative_strength"] += 0.07
+        reasons.append(f"Positive relative strength: {summary}")
+    elif rs_score <= -0.20:
+        score -= 0.12
+        breakdown["relative_strength"] -= 0.12
+        risks.append(f"Weak relative strength for longs: {summary}")
+    elif rs_score <= -0.10:
+        score -= 0.07
+        breakdown["relative_strength"] -= 0.07
+        risks.append(f"Negative relative strength for longs: {summary}")
+
+    if market_label in {"strongly_outperforming", "outperforming"}:
+        score += 0.03
+        breakdown["relative_strength"] += 0.03
+        reasons.append(f"Ticker is outperforming SPY: {market_label}")
+
+    if sector_label in {"strongly_outperforming", "outperforming"}:
+        score += 0.04
+        breakdown["relative_strength"] += 0.04
+        reasons.append(f"Ticker is outperforming its sector ETF: {sector_label}")
+    elif sector_label in {"strongly_underperforming", "underperforming"}:
+        score -= 0.05
+        breakdown["relative_strength"] -= 0.05
+        risks.append(f"Ticker is lagging its sector ETF: {sector_label}")
+
+    return score
+
+
+def apply_relative_strength_to_short(score: float, rs: dict, breakdown: dict, reasons: list, risks: list) -> float:
+    rs_score = float(rs.get("rs_score", 0.0))
+    market_label = rs.get("market_relative_label", "unknown")
+    sector_label = rs.get("sector_relative_label", "unknown")
+    summary = rs.get("relative_strength_summary", "unknown")
+
+    if rs_score <= -0.20:
+        score += 0.12
+        breakdown["relative_strength"] += 0.12
+        reasons.append(f"Weak relative strength supports short: {summary}")
+    elif rs_score <= -0.10:
+        score += 0.07
+        breakdown["relative_strength"] += 0.07
+        reasons.append(f"Negative relative strength supports short: {summary}")
+    elif rs_score >= 0.20:
+        score -= 0.12
+        breakdown["relative_strength"] -= 0.12
+        risks.append(f"Strong relative strength is hostile for shorts: {summary}")
+    elif rs_score >= 0.10:
+        score -= 0.07
+        breakdown["relative_strength"] -= 0.07
+        risks.append(f"Positive relative strength is hostile for shorts: {summary}")
+
+    if market_label in {"strongly_underperforming", "underperforming"}:
+        score += 0.03
+        breakdown["relative_strength"] += 0.03
+        reasons.append(f"Ticker is underperforming SPY: {market_label}")
+
+    if sector_label in {"strongly_underperforming", "underperforming"}:
+        score += 0.04
+        breakdown["relative_strength"] += 0.04
+        reasons.append(f"Ticker is underperforming its sector ETF: {sector_label}")
+    elif sector_label in {"strongly_outperforming", "outperforming"}:
+        score -= 0.05
+        breakdown["relative_strength"] -= 0.05
+        risks.append(f"Ticker is outperforming its sector ETF: {sector_label}")
+
+    return score
+
+
+def score_long_setup(
+    data: dict,
+    context: dict,
+    sentiment: dict,
+    quote: dict,
+    rs: dict,
+) -> tuple[float, list[str], list[str], dict]:
     regime = context.get("regime", "unknown")
 
     score = 0.50
@@ -260,6 +347,7 @@ def score_long_setup(data: dict, context: dict, sentiment: dict, quote: dict) ->
         "context": 0.0,
         "sentiment": 0.0,
         "liquidity": 0.0,
+        "relative_strength": 0.0,
         "risk_reward": 0.0,
         "decay": 0.0,
     }
@@ -378,6 +466,7 @@ def score_long_setup(data: dict, context: dict, sentiment: dict, quote: dict) ->
 
     score = apply_sentiment_to_long(score, sentiment, breakdown, reasons, risks)
     score = apply_liquidity_checks(score, quote, breakdown, reasons, risks)
+    score = apply_relative_strength_to_long(score, rs, breakdown, reasons, risks)
 
     if data.get("signal_decay"):
         score -= 0.14
@@ -387,7 +476,13 @@ def score_long_setup(data: dict, context: dict, sentiment: dict, quote: dict) ->
     return score, reasons, risks, breakdown
 
 
-def score_short_setup(data: dict, context: dict, sentiment: dict, quote: dict) -> tuple[float, list[str], list[str], dict]:
+def score_short_setup(
+    data: dict,
+    context: dict,
+    sentiment: dict,
+    quote: dict,
+    rs: dict,
+) -> tuple[float, list[str], list[str], dict]:
     regime = context.get("regime", "unknown")
 
     score = 0.50
@@ -402,6 +497,7 @@ def score_short_setup(data: dict, context: dict, sentiment: dict, quote: dict) -
         "context": 0.0,
         "sentiment": 0.0,
         "liquidity": 0.0,
+        "relative_strength": 0.0,
         "risk_reward": 0.0,
         "decay": 0.0,
     }
@@ -512,6 +608,7 @@ def score_short_setup(data: dict, context: dict, sentiment: dict, quote: dict) -
 
     score = apply_sentiment_to_short(score, sentiment, breakdown, reasons, risks)
     score = apply_liquidity_checks(score, quote, breakdown, reasons, risks)
+    score = apply_relative_strength_to_short(score, rs, breakdown, reasons, risks)
 
     if data.get("signal_decay"):
         score -= 0.12
@@ -542,9 +639,10 @@ def generate_signal(ticker: str, context: dict | None = None) -> dict:
     regime = context.get("regime", "unknown")
     sentiment = get_sentiment_snapshot(ticker)
     quote = get_latest_quote(ticker)
+    rs = get_relative_strength_snapshot(ticker)
 
-    long_score, long_reasons, long_risks, long_breakdown = score_long_setup(data, context, sentiment, quote)
-    short_score, short_reasons, short_risks, short_breakdown = score_short_setup(data, context, sentiment, quote)
+    long_score, long_reasons, long_risks, long_breakdown = score_long_setup(data, context, sentiment, quote, rs)
+    short_score, short_reasons, short_risks, short_breakdown = score_short_setup(data, context, sentiment, quote, rs)
 
     long_confidence = clamp(long_score)
     short_confidence = clamp(short_score)
@@ -610,6 +708,22 @@ def generate_signal(ticker: str, context: dict | None = None) -> dict:
         "top_catalyst": sentiment.get("top_catalyst"),
         "catalyst_flags": sentiment.get("catalyst_flags", []),
         "recent_headlines": sentiment.get("recent_headlines", []),
+
+        "sector_etf": rs.get("sector_etf"),
+        "rs_score": round(float(rs.get("rs_score", 0.0)), 4),
+        "market_relative_label": rs.get("market_relative_label"),
+        "qqq_relative_label": rs.get("qqq_relative_label"),
+        "sector_relative_label": rs.get("sector_relative_label"),
+        "relative_strength_summary": rs.get("relative_strength_summary"),
+        "rs_vs_spy_5m": rs.get("rs_vs_spy_5m"),
+        "rs_vs_spy_15m": rs.get("rs_vs_spy_15m"),
+        "rs_vs_spy_30m": rs.get("rs_vs_spy_30m"),
+        "rs_vs_qqq_5m": rs.get("rs_vs_qqq_5m"),
+        "rs_vs_qqq_15m": rs.get("rs_vs_qqq_15m"),
+        "rs_vs_qqq_30m": rs.get("rs_vs_qqq_30m"),
+        "rs_vs_sector_5m": rs.get("rs_vs_sector_5m"),
+        "rs_vs_sector_15m": rs.get("rs_vs_sector_15m"),
+        "rs_vs_sector_30m": rs.get("rs_vs_sector_30m"),
 
         "spread_pct": round(spread_pct, 4) if spread_pct is not None else None,
         "volume_ratio": round(data["volume_ratio"], 2),
