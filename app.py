@@ -95,12 +95,85 @@ def render_signal_card(item: dict, featured: bool = False):
             st.json(item.get("breakdown"))
 
 
+def render_latest_alert(latest_alert: dict):
+    st.divider()
+    st.subheader("Live Trading Alert")
+
+    if latest_alert and latest_alert.get("active"):
+        alert_signal = latest_alert.get("signal", "HOLD")
+        alert_color = signal_color(alert_signal)
+
+        st.markdown(
+            f"""
+            <div style="
+                border: 6px solid {alert_color};
+                border-radius: 22px;
+                padding: 28px;
+                margin-bottom: 20px;
+                background: rgba(255,255,255,0.05);
+            ">
+                <div style="
+                    display: flex;
+                    align-items: center;
+                    gap: 18px;
+                    margin-bottom: 10px;
+                ">
+                    <div style="
+                        width: 40px;
+                        height: 40px;
+                        border-radius: 50%;
+                        background: {alert_color};
+                        box-shadow: 0 0 22px {alert_color};
+                    "></div>
+                    <div style="font-size: 48px; font-weight: 900;">
+                        {latest_alert.get("message")}
+                    </div>
+                </div>
+
+                <div style="font-size: 20px;">
+                    Confidence: <strong>{latest_alert.get("confidence", 0):.2f}</strong>
+                    &nbsp; | &nbsp;
+                    Price: <strong>{latest_alert.get("price")}</strong>
+                    &nbsp; | &nbsp;
+                    R/R: <strong>{latest_alert.get("risk_reward")}</strong>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        cols = st.columns(3)
+        cols[0].metric("Entry", latest_alert.get("entry_zone"))
+        cols[1].metric("Stop", latest_alert.get("stop"))
+        cols[2].metric("Target", latest_alert.get("target"))
+
+        if latest_alert.get("should_ding"):
+            st.success("NEW SIGNAL TRIGGERED")
+
+        with st.expander("Why this alert fired"):
+            st.markdown("**Reasons**")
+            for reason in latest_alert.get("reasons", []):
+                st.write(f"- {reason}")
+
+            if latest_alert.get("risks"):
+                st.markdown("**Risks**")
+                for risk in latest_alert.get("risks", []):
+                    st.write(f"- {risk}")
+
+    else:
+        message = latest_alert.get("message", "No active trading alert.") if latest_alert else "No active trading alert."
+        st.info(message)
+
+
 st.title("Real-Time Trading Intelligence Engine")
 
 heartbeat = store.get_json("worker_heartbeat", {})
 signals = store.get_json("live_signals", [])
 high_quality = store.get_json("high_quality_signals", [])
 market_context = store.get_json("market_context", {})
+latest_alert = store.get_json("latest_alert", {})
+
+render_latest_alert(latest_alert)
 
 buy_signals = [
     item for item in signals
@@ -117,12 +190,13 @@ hold_signals = [
     if item.get("signal") == "HOLD"
 ]
 
-top_cols = st.columns(4)
+top_cols = st.columns(5)
 
 top_cols[0].metric("Worker", heartbeat.get("status", "unknown"))
 top_cols[1].metric("Regime", market_context.get("regime", "unknown"))
-top_cols[2].metric("Buy Signals", len(buy_signals))
-top_cols[3].metric("Sell Signals", len(sell_signals))
+top_cols[2].metric("Signals", len(signals))
+top_cols[3].metric("Buy Signals", len(buy_signals))
+top_cols[4].metric("Sell Signals", len(sell_signals))
 
 st.divider()
 
@@ -130,7 +204,9 @@ st.subheader("Primary Action Signal")
 
 primary = None
 
-if buy_signals:
+if high_quality:
+    primary = sorted(high_quality, key=lambda x: x.get("confidence", 0), reverse=True)[0]
+elif buy_signals:
     primary = sorted(buy_signals, key=lambda x: x.get("confidence", 0), reverse=True)[0]
 elif sell_signals:
     primary = sorted(sell_signals, key=lambda x: x.get("confidence", 0), reverse=True)[0]
