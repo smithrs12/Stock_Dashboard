@@ -5,6 +5,12 @@ from zoneinfo import ZoneInfo
 from config import config
 from redis_store import store
 from signal_engine import generate_signals
+from signal_evaluator import (
+    append_signal_batch,
+    evaluate_pending_signals,
+    get_recent_signal_log,
+    summarize_signal_performance,
+)
 from watchlist_engine import get_active_watchlist
 from market_context import get_market_context
 
@@ -16,6 +22,9 @@ MARKET_CLOSE = dt_time(16, 0)
 SIGNAL_HISTORY_KEY = "signal_history"
 SIGNAL_HISTORY_LENGTH = 5
 SIGNAL_HISTORY_TTL = 60 * 60 * 6
+
+SIGNAL_PERFORMANCE_SUMMARY_KEY = "signal_performance_summary"
+RECENT_SIGNAL_LOG_KEY = "recent_signal_log"
 
 
 def utc_now_iso() -> str:
@@ -223,6 +232,12 @@ def build_alert_payload(top_signal: dict | None, previous_alert: dict | None) ->
         "top_catalyst": top_signal.get("top_catalyst"),
         "catalyst_flags": top_signal.get("catalyst_flags", []),
         "recent_headlines": top_signal.get("recent_headlines", []),
+        "sector_etf": top_signal.get("sector_etf"),
+        "rs_score": top_signal.get("rs_score"),
+        "market_relative_label": top_signal.get("market_relative_label"),
+        "qqq_relative_label": top_signal.get("qqq_relative_label"),
+        "sector_relative_label": top_signal.get("sector_relative_label"),
+        "relative_strength_summary": top_signal.get("relative_strength_summary"),
         "spread_pct": top_signal.get("spread_pct"),
         "volume_ratio": top_signal.get("volume_ratio"),
         "volume_ratio_60": top_signal.get("volume_ratio_60"),
@@ -295,6 +310,19 @@ def clear_market_state(status: str, loop_count: int, context: dict | None = None
     )
 
 
+def update_performance_state(signals: list[dict]):
+    append_signal_batch(signals)
+    evaluate_pending_signals()
+
+    summary = summarize_signal_performance()
+    recent_log = get_recent_signal_log(limit=150)
+
+    store.set_json(SIGNAL_PERFORMANCE_SUMMARY_KEY, summary, ttl=180)
+    store.set_json(RECENT_SIGNAL_LOG_KEY, recent_log, ttl=180)
+
+    return summary, recent_log
+
+
 def run_worker():
     loop_count = 0
 
@@ -329,6 +357,8 @@ def run_worker():
                 and not signal.get("signal_decay", False)
             ]
 
+            performance_summary, recent_signal_log = update_performance_state(signals)
+
             top_signal = get_top_actionable_signal(signals)
             latest_alert = build_alert_payload(top_signal, previous_alert)
 
@@ -336,6 +366,8 @@ def run_worker():
             store.set_json("live_signals", signals, ttl=180)
             store.set_json("high_quality_signals", high_quality, ttl=180)
             store.set_json("latest_alert", latest_alert, ttl=180)
+
+            horizon_15 = performance_summary.get("by_horizon", {}).get("15", {})
 
             write_heartbeat(
                 status="running",
@@ -349,6 +381,9 @@ def run_worker():
                     "top_catalyst": latest_alert.get("top_catalyst"),
                     "sentiment_label": latest_alert.get("sentiment_label"),
                     "signal_memory_state": latest_alert.get("signal_memory_state"),
+                    "evaluated_signals_15m": horizon_15.get("count", 0),
+                    "win_rate_15m": horizon_15.get("win_rate", 0.0),
+                    "recent_signal_log_count": len(recent_signal_log),
                 },
             )
 
@@ -359,7 +394,9 @@ def run_worker():
                 f"alert={latest_alert.get('message')} "
                 f"catalyst={latest_alert.get('top_catalyst')} "
                 f"sentiment={latest_alert.get('sentiment_label')} "
-                f"memory={latest_alert.get('signal_memory_state')}"
+                f"memory={latest_alert.get('signal_memory_state')} "
+                f"eval15_count={horizon_15.get('count', 0)} "
+                f"eval15_wr={horizon_15.get('win_rate', 0.0)}"
             )
 
         except Exception as exc:
