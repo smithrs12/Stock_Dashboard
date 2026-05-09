@@ -29,6 +29,36 @@ def signal_label(signal: str) -> str:
     return "YELLOW DOT — HOLD"
 
 
+def sentiment_color(label: str) -> str:
+    if label == "bullish":
+        return "#16a34a"
+    if label == "bearish":
+        return "#dc2626"
+    return "#94a3b8"
+
+
+def render_sentiment_chip(label: str, score: float):
+    color = sentiment_color(label)
+    st.markdown(
+        f"""
+        <div style="
+            display: inline-block;
+            border: 1px solid {color};
+            color: {color};
+            border-radius: 999px;
+            padding: 6px 12px;
+            font-size: 14px;
+            font-weight: 700;
+            margin-right: 8px;
+            margin-bottom: 8px;
+        ">
+            Sentiment: {label.upper()} ({score:.2f})
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def render_signal_card(item: dict, featured: bool = False):
     signal = item.get("signal", "HOLD")
     color = signal_color(signal)
@@ -68,6 +98,8 @@ def render_signal_card(item: dict, featured: bool = False):
                 Price: <strong>{item.get("price")}</strong>
                 &nbsp; | &nbsp;
                 Regime: <strong>{item.get("regime")}</strong>
+                &nbsp; | &nbsp;
+                Catalyst: <strong>{item.get("top_catalyst") or "none"}</strong>
             </div>
         </div>
         """,
@@ -79,6 +111,22 @@ def render_signal_card(item: dict, featured: bool = False):
     cols[1].metric("Stop", item.get("stop"))
     cols[2].metric("Target", item.get("target"))
     cols[3].metric("R/R", item.get("risk_reward"))
+
+    subcols = st.columns(4)
+    subcols[0].metric("Sentiment", item.get("sentiment_label", "neutral"))
+    subcols[1].metric("Sentiment Score", item.get("sentiment_score", 0.0))
+    subcols[2].metric("Articles", item.get("article_count", 0))
+    subcols[3].metric("Mention Spike", "Yes" if item.get("mention_spike") else "No")
+
+    render_sentiment_chip(
+        item.get("sentiment_label", "neutral"),
+        float(item.get("sentiment_score", 0.0)),
+    )
+
+    if item.get("catalyst_flags"):
+        st.markdown(
+            f"**Catalysts:** {', '.join(item.get('catalyst_flags', []))}"
+        )
 
     with st.expander("Why this signal?"):
         st.markdown("**Reasons**")
@@ -93,6 +141,23 @@ def render_signal_card(item: dict, featured: bool = False):
         if item.get("breakdown"):
             st.markdown("**Confidence Breakdown**")
             st.json(item.get("breakdown"))
+
+        headlines = item.get("recent_headlines", [])
+        if headlines:
+            st.markdown("**Recent Headlines**")
+            for headline in headlines[:5]:
+                title = headline.get("headline", "Untitled")
+                source = headline.get("source", "Unknown")
+                created_at = headline.get("created_at", "")
+                catalysts = headline.get("catalysts", [])
+                score = headline.get("sentiment_score", 0.0)
+
+                st.markdown(
+                    f"- **{title}**  \n"
+                    f"  Source: {source} | Score: {score:.2f} | "
+                    f"Catalysts: {', '.join(catalysts) if catalysts else 'none'} | "
+                    f"Time: {created_at}"
+                )
 
 
 def render_latest_alert(latest_alert: dict):
@@ -136,6 +201,8 @@ def render_latest_alert(latest_alert: dict):
                     Price: <strong>{latest_alert.get("price")}</strong>
                     &nbsp; | &nbsp;
                     R/R: <strong>{latest_alert.get("risk_reward")}</strong>
+                    &nbsp; | &nbsp;
+                    Catalyst: <strong>{latest_alert.get("top_catalyst") or "none"}</strong>
                 </div>
             </div>
             """,
@@ -146,6 +213,22 @@ def render_latest_alert(latest_alert: dict):
         cols[0].metric("Entry", latest_alert.get("entry_zone"))
         cols[1].metric("Stop", latest_alert.get("stop"))
         cols[2].metric("Target", latest_alert.get("target"))
+
+        sentiment_cols = st.columns(4)
+        sentiment_cols[0].metric("Sentiment", latest_alert.get("sentiment_label", "neutral"))
+        sentiment_cols[1].metric("Sentiment Score", latest_alert.get("sentiment_score", 0.0))
+        sentiment_cols[2].metric("Articles", latest_alert.get("article_count", 0))
+        sentiment_cols[3].metric("Mention Spike", "Yes" if latest_alert.get("mention_spike") else "No")
+
+        render_sentiment_chip(
+            latest_alert.get("sentiment_label", "neutral"),
+            float(latest_alert.get("sentiment_score", 0.0)),
+        )
+
+        if latest_alert.get("catalyst_flags"):
+            st.markdown(
+                f"**Catalysts:** {', '.join(latest_alert.get('catalyst_flags', []))}"
+            )
 
         if latest_alert.get("should_ding"):
             st.success("NEW SIGNAL TRIGGERED")
@@ -160,6 +243,22 @@ def render_latest_alert(latest_alert: dict):
                 for risk in latest_alert.get("risks", []):
                     st.write(f"- {risk}")
 
+            headlines = latest_alert.get("recent_headlines", [])
+            if headlines:
+                st.markdown("**Recent Headlines**")
+                for headline in headlines[:5]:
+                    title = headline.get("headline", "Untitled")
+                    source = headline.get("source", "Unknown")
+                    created_at = headline.get("created_at", "")
+                    catalysts = headline.get("catalysts", [])
+                    score = headline.get("sentiment_score", 0.0)
+
+                    st.markdown(
+                        f"- **{title}**  \n"
+                        f"  Source: {source} | Score: {score:.2f} | "
+                        f"Catalysts: {', '.join(catalysts) if catalysts else 'none'} | "
+                        f"Time: {created_at}"
+                    )
     else:
         message = latest_alert.get("message", "No active trading alert.") if latest_alert else "No active trading alert."
         st.info(message)
@@ -190,13 +289,15 @@ hold_signals = [
     if item.get("signal") == "HOLD"
 ]
 
-top_cols = st.columns(5)
+top_cols = st.columns(7)
 
 top_cols[0].metric("Worker", heartbeat.get("status", "unknown"))
 top_cols[1].metric("Regime", market_context.get("regime", "unknown"))
-top_cols[2].metric("Signals", len(signals))
-top_cols[3].metric("Buy Signals", len(buy_signals))
-top_cols[4].metric("Sell Signals", len(sell_signals))
+top_cols[2].metric("Volatility", market_context.get("volatility_level", "unknown"))
+top_cols[3].metric("Risk-On", market_context.get("risk_on_score", 0.0))
+top_cols[4].metric("Signals", len(signals))
+top_cols[5].metric("Buy Signals", len(buy_signals))
+top_cols[6].metric("Sell Signals", len(sell_signals))
 
 st.divider()
 
@@ -265,6 +366,14 @@ if signals:
         "target",
         "risk_reward",
         "regime",
+        "volatility_level",
+        "risk_on_score",
+        "sentiment_label",
+        "sentiment_score",
+        "top_catalyst",
+        "mention_spike",
+        "article_count",
+        "spread_pct",
         "volume_ratio",
         "momentum_5m",
         "momentum_15m",
