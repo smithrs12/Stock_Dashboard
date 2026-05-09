@@ -45,7 +45,83 @@ def build_risk_plan(data: dict, signal: str) -> dict:
     }
 
 
-def score_long_setup(data: dict, regime: str) -> tuple[float, list[str], list[str], dict]:
+def apply_long_market_context(score: float, regime: str, breakdown: dict, reasons: list, risks: list) -> float:
+    if regime == "strong_trend_up":
+        score += 0.10
+        breakdown["context"] += 0.10
+        reasons.append("Market regime strongly supports long setups")
+    elif regime == "weak_trend_up":
+        score += 0.06
+        breakdown["context"] += 0.06
+        reasons.append("Market regime mildly supports long setups")
+    elif regime == "mixed":
+        score += 0.02
+        breakdown["context"] += 0.02
+        reasons.append("Market regime is mixed but acceptable")
+    elif regime == "chop":
+        score -= 0.07
+        breakdown["context"] -= 0.07
+        risks.append("Market is choppy")
+    elif regime == "high_volatility_chop":
+        score -= 0.12
+        breakdown["context"] -= 0.12
+        risks.append("High-volatility chop is hostile for clean long entries")
+    elif regime == "weak_trend_down":
+        score -= 0.10
+        breakdown["context"] -= 0.10
+        risks.append("Market regime is weak bearish against long setup")
+    elif regime == "strong_trend_down":
+        score -= 0.16
+        breakdown["context"] -= 0.16
+        risks.append("Market regime strongly opposes long setup")
+    else:
+        score -= 0.03
+        breakdown["context"] -= 0.03
+        risks.append(f"Market regime is unclear: {regime}")
+
+    return score
+
+
+def apply_short_market_context(score: float, regime: str, breakdown: dict, reasons: list, risks: list) -> float:
+    if regime == "strong_trend_down":
+        score += 0.10
+        breakdown["context"] += 0.10
+        reasons.append("Market regime strongly supports short setups")
+    elif regime == "weak_trend_down":
+        score += 0.06
+        breakdown["context"] += 0.06
+        reasons.append("Market regime mildly supports short setups")
+    elif regime == "mixed":
+        score += 0.01
+        breakdown["context"] += 0.01
+        reasons.append("Market regime is mixed but short is still possible")
+    elif regime == "chop":
+        score -= 0.06
+        breakdown["context"] -= 0.06
+        risks.append("Market is choppy")
+    elif regime == "high_volatility_chop":
+        score -= 0.10
+        breakdown["context"] -= 0.10
+        risks.append("High-volatility chop increases short-squeeze/reversal risk")
+    elif regime == "weak_trend_up":
+        score -= 0.10
+        breakdown["context"] -= 0.10
+        risks.append("Market regime is weak bullish against short setup")
+    elif regime == "strong_trend_up":
+        score -= 0.16
+        breakdown["context"] -= 0.16
+        risks.append("Market regime strongly opposes short setup")
+    else:
+        score -= 0.03
+        breakdown["context"] -= 0.03
+        risks.append(f"Market regime is unclear: {regime}")
+
+    return score
+
+
+def score_long_setup(data: dict, context: dict) -> tuple[float, list[str], list[str], dict]:
+    regime = context.get("regime", "unknown")
+
     score = 0.50
     reasons = []
     risks = []
@@ -161,18 +237,16 @@ def score_long_setup(data: dict, regime: str) -> tuple[float, list[str], list[st
         breakdown["risk_reward"] -= 0.07
         risks.append(f"Resistance is close overhead: {distance_to_resistance:.2%}")
 
-    if regime in {"bullish_intraday", "trending", "mixed"}:
-        score += 0.06
-        breakdown["context"] += 0.06
-        reasons.append(f"Market context is acceptable: {regime}")
-    elif regime == "bearish_intraday":
-        score -= 0.10
-        breakdown["context"] -= 0.10
-        risks.append("SPY/QQQ intraday context is bearish")
-    elif regime == "chop":
-        score -= 0.06
-        breakdown["context"] -= 0.06
-        risks.append("Market is choppy")
+    score = apply_long_market_context(score, regime, breakdown, reasons, risks)
+
+    if context.get("risk_on_score", 0) >= 0.75:
+        score += 0.03
+        breakdown["context"] += 0.03
+        reasons.append(f"Risk-on score supportive: {context.get('risk_on_score')}")
+    elif context.get("risk_on_score", 0) <= 0.25:
+        score -= 0.04
+        breakdown["context"] -= 0.04
+        risks.append(f"Risk-on score weak: {context.get('risk_on_score')}")
 
     if data.get("signal_decay"):
         score -= 0.14
@@ -182,7 +256,9 @@ def score_long_setup(data: dict, regime: str) -> tuple[float, list[str], list[st
     return score, reasons, risks, breakdown
 
 
-def score_short_setup(data: dict, regime: str) -> tuple[float, list[str], list[str], dict]:
+def score_short_setup(data: dict, context: dict) -> tuple[float, list[str], list[str], dict]:
+    regime = context.get("regime", "unknown")
+
     score = 0.50
     reasons = []
     risks = []
@@ -290,18 +366,16 @@ def score_short_setup(data: dict, regime: str) -> tuple[float, list[str], list[s
         breakdown["risk_reward"] -= 0.07
         risks.append(f"Support is close below: {distance_to_support:.2%}")
 
-    if regime == "bearish_intraday":
-        score += 0.07
-        breakdown["context"] += 0.07
-        reasons.append("SPY/QQQ intraday context supports short")
-    elif regime == "bullish_intraday":
-        score -= 0.10
-        breakdown["context"] -= 0.10
-        risks.append("SPY/QQQ intraday context is bullish against short")
-    elif regime == "chop":
-        score -= 0.05
-        breakdown["context"] -= 0.05
-        risks.append("Market is choppy")
+    score = apply_short_market_context(score, regime, breakdown, reasons, risks)
+
+    if context.get("risk_on_score", 0) <= 0.25:
+        score += 0.03
+        breakdown["context"] += 0.03
+        reasons.append(f"Risk-on score weak, supportive for shorts: {context.get('risk_on_score')}")
+    elif context.get("risk_on_score", 0) >= 0.75:
+        score -= 0.04
+        breakdown["context"] -= 0.04
+        risks.append(f"Risk-on score strong, hostile for shorts: {context.get('risk_on_score')}")
 
     return score, reasons, risks, breakdown
 
@@ -326,8 +400,8 @@ def generate_signal(ticker: str, context: dict | None = None) -> dict:
 
     regime = context.get("regime", "unknown")
 
-    long_score, long_reasons, long_risks, long_breakdown = score_long_setup(data, regime)
-    short_score, short_reasons, short_risks, short_breakdown = score_short_setup(data, regime)
+    long_score, long_reasons, long_risks, long_breakdown = score_long_setup(data, context)
+    short_score, short_reasons, short_risks, short_breakdown = score_short_setup(data, context)
 
     long_confidence = clamp(long_score)
     short_confidence = clamp(short_score)
@@ -374,6 +448,9 @@ def generate_signal(ticker: str, context: dict | None = None) -> dict:
         "risk_reward": risk_plan["risk_reward"] if signal in {"BUY", "SELL"} else 0.0,
 
         "regime": regime,
+        "volatility_level": context.get("volatility_level", "unknown"),
+        "risk_on_score": context.get("risk_on_score", 0.0),
+
         "volume_ratio": round(data["volume_ratio"], 2),
         "volume_ratio_60": round(data["volume_ratio_60"], 2),
         "momentum_5m": round(data["momentum_5m"], 4),
