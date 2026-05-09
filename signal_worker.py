@@ -47,7 +47,7 @@ def should_trigger_ding(current_alert: dict | None, previous_alert: dict | None)
     if not current_alert:
         return False
 
-    if not previous_alert:
+    if not previous_alert or not previous_alert.get("active"):
         return True
 
     current_key = f"{current_alert.get('ticker')}:{current_alert.get('signal')}"
@@ -56,10 +56,13 @@ def should_trigger_ding(current_alert: dict | None, previous_alert: dict | None)
     if current_key != previous_key:
         return True
 
-    current_confidence = current_alert.get("confidence", 0)
-    previous_confidence = previous_alert.get("confidence", 0)
+    current_confidence = float(current_alert.get("confidence", 0))
+    previous_confidence = float(previous_alert.get("confidence", 0))
 
-    if current_confidence >= config.HIGH_QUALITY_SIGNAL_CONFIDENCE and current_confidence - previous_confidence >= 0.05:
+    if (
+        current_confidence >= config.HIGH_QUALITY_SIGNAL_CONFIDENCE
+        and current_confidence - previous_confidence >= 0.05
+    ):
         return True
 
     return False
@@ -85,12 +88,41 @@ def build_alert_payload(top_signal: dict | None, previous_alert: dict | None) ->
         "ticker": top_signal.get("ticker"),
         "signal": top_signal.get("signal"),
         "confidence": top_signal.get("confidence"),
+        "long_confidence": top_signal.get("long_confidence"),
+        "short_confidence": top_signal.get("short_confidence"),
         "price": top_signal.get("price"),
         "entry_zone": top_signal.get("entry_zone"),
         "stop": top_signal.get("stop"),
         "target": top_signal.get("target"),
         "risk_reward": top_signal.get("risk_reward"),
         "message": f"DING — {top_signal.get('signal')} {top_signal.get('ticker')} NOW",
+        "regime": top_signal.get("regime"),
+        "volatility_level": top_signal.get("volatility_level"),
+        "risk_on_score": top_signal.get("risk_on_score"),
+        "sentiment_score": top_signal.get("sentiment_score"),
+        "sentiment_label": top_signal.get("sentiment_label"),
+        "mention_spike": top_signal.get("mention_spike"),
+        "article_count": top_signal.get("article_count"),
+        "top_catalyst": top_signal.get("top_catalyst"),
+        "catalyst_flags": top_signal.get("catalyst_flags", []),
+        "recent_headlines": top_signal.get("recent_headlines", []),
+        "spread_pct": top_signal.get("spread_pct"),
+        "volume_ratio": top_signal.get("volume_ratio"),
+        "volume_ratio_60": top_signal.get("volume_ratio_60"),
+        "momentum_5m": top_signal.get("momentum_5m"),
+        "momentum_15m": top_signal.get("momentum_15m"),
+        "momentum_30m": top_signal.get("momentum_30m"),
+        "momentum_acceleration": top_signal.get("momentum_acceleration"),
+        "vwap_distance": top_signal.get("vwap_distance"),
+        "vwap_state": top_signal.get("vwap_state"),
+        "rsi": top_signal.get("rsi"),
+        "adx": top_signal.get("adx"),
+        "macd_histogram": top_signal.get("macd_histogram"),
+        "macd_histogram_rising": top_signal.get("macd_histogram_rising"),
+        "distance_to_support": top_signal.get("distance_to_support"),
+        "distance_to_resistance": top_signal.get("distance_to_resistance"),
+        "signal_decay": top_signal.get("signal_decay"),
+        "breakdown": top_signal.get("breakdown", {}),
         "reasons": top_signal.get("reasons", []),
         "risks": top_signal.get("risks", []),
         "timestamp": utc_now_iso(),
@@ -163,7 +195,7 @@ def run_worker():
 
             previous_alert = store.get_json("latest_alert", default=None)
 
-            watchlist = get_active_watchlist(limit=30)
+            watchlist = get_active_watchlist(limit=config.WATCHLIST_LIMIT)
             signals = generate_signals(watchlist)
 
             high_quality = [
@@ -190,6 +222,8 @@ def run_worker():
                     "market_open": True,
                     "watchlist_size": len(watchlist),
                     "latest_alert": latest_alert.get("message"),
+                    "top_catalyst": latest_alert.get("top_catalyst"),
+                    "sentiment_label": latest_alert.get("sentiment_label"),
                 },
             )
 
@@ -197,7 +231,9 @@ def run_worker():
                 f"[signal_worker] loop={loop_count} "
                 f"signals={len(signals)} "
                 f"high_quality={len(high_quality)} "
-                f"alert={latest_alert.get('message')}"
+                f"alert={latest_alert.get('message')} "
+                f"catalyst={latest_alert.get('top_catalyst')} "
+                f"sentiment={latest_alert.get('sentiment_label')}"
             )
 
         except Exception as exc:
