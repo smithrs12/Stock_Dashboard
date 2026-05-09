@@ -43,6 +43,18 @@ def sentiment_color(label: str) -> str:
     return "#94a3b8"
 
 
+def memory_color(state: str) -> str:
+    if state == "strengthening":
+        return "#16a34a"
+    if state == "fading":
+        return "#dc2626"
+    if state == "reversing":
+        return "#f97316"
+    if state == "new":
+        return "#38bdf8"
+    return "#94a3b8"
+
+
 def render_sentiment_chip(label: str, score: float):
     color = sentiment_color(label)
     st.markdown(
@@ -59,6 +71,28 @@ def render_sentiment_chip(label: str, score: float):
             margin-bottom: 8px;
         ">
             Sentiment: {label.upper()} ({score:.2f})
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_memory_chip(state: str, persistence: int):
+    color = memory_color(state)
+    st.markdown(
+        f"""
+        <div style="
+            display: inline-block;
+            border: 1px solid {color};
+            color: {color};
+            border-radius: 999px;
+            padding: 6px 12px;
+            font-size: 14px;
+            font-weight: 700;
+            margin-right: 8px;
+            margin-bottom: 8px;
+        ">
+            Signal Memory: {state.upper()} (cycles: {persistence})
         </div>
         """,
         unsafe_allow_html=True,
@@ -191,9 +225,19 @@ def render_signal_card(item: dict, featured: bool = False):
     subcols[2].metric("Articles", item.get("article_count", 0))
     subcols[3].metric("Mention Spike", "Yes" if item.get("mention_spike") else "No")
 
+    memory_cols = st.columns(4)
+    memory_cols[0].metric("Memory State", item.get("signal_memory_state", "unknown"))
+    memory_cols[1].metric("Persistence", item.get("signal_persistence", 0))
+    memory_cols[2].metric("Confidence Δ", item.get("confidence_delta", 0.0))
+    memory_cols[3].metric("Momentum Δ", item.get("momentum_delta", 0.0))
+
     render_sentiment_chip(
         item.get("sentiment_label", "neutral"),
         float(item.get("sentiment_score", 0.0)),
+    )
+    render_memory_chip(
+        item.get("signal_memory_state", "unknown"),
+        int(item.get("signal_persistence", 0)),
     )
 
     if item.get("catalyst_flags"):
@@ -214,6 +258,13 @@ def render_signal_card(item: dict, featured: bool = False):
         if item.get("breakdown"):
             st.markdown("**Confidence Breakdown**")
             st.json(item.get("breakdown"))
+
+        st.markdown("**Signal Memory**")
+        st.write(f"- State: {item.get('signal_memory_state', 'unknown')}")
+        st.write(f"- Persistence: {item.get('signal_persistence', 0)} cycles")
+        st.write(f"- Confidence delta: {item.get('confidence_delta', 0.0)}")
+        st.write(f"- Momentum delta: {item.get('momentum_delta', 0.0)}")
+        st.write(f"- Volume delta: {item.get('volume_delta', 0.0)}")
 
         headlines = item.get("recent_headlines", [])
         if headlines:
@@ -293,9 +344,19 @@ def render_latest_alert(latest_alert: dict):
         sentiment_cols[2].metric("Articles", latest_alert.get("article_count", 0))
         sentiment_cols[3].metric("Mention Spike", "Yes" if latest_alert.get("mention_spike") else "No")
 
+        memory_cols = st.columns(4)
+        memory_cols[0].metric("Memory State", latest_alert.get("signal_memory_state", "unknown"))
+        memory_cols[1].metric("Persistence", latest_alert.get("signal_persistence", 0))
+        memory_cols[2].metric("Confidence Δ", latest_alert.get("confidence_delta", 0.0))
+        memory_cols[3].metric("Momentum Δ", latest_alert.get("momentum_delta", 0.0))
+
         render_sentiment_chip(
             latest_alert.get("sentiment_label", "neutral"),
             float(latest_alert.get("sentiment_score", 0.0)),
+        )
+        render_memory_chip(
+            latest_alert.get("signal_memory_state", "unknown"),
+            int(latest_alert.get("signal_persistence", 0)),
         )
 
         if latest_alert.get("catalyst_flags"):
@@ -315,6 +376,13 @@ def render_latest_alert(latest_alert: dict):
                 st.markdown("**Risks**")
                 for risk in latest_alert.get("risks", []):
                     st.write(f"- {risk}")
+
+            st.markdown("**Signal Memory**")
+            st.write(f"- State: {latest_alert.get('signal_memory_state', 'unknown')}")
+            st.write(f"- Persistence: {latest_alert.get('signal_persistence', 0)} cycles")
+            st.write(f"- Confidence delta: {latest_alert.get('confidence_delta', 0.0)}")
+            st.write(f"- Momentum delta: {latest_alert.get('momentum_delta', 0.0)}")
+            st.write(f"- Volume delta: {latest_alert.get('volume_delta', 0.0)}")
 
             headlines = latest_alert.get("recent_headlines", [])
             if headlines:
@@ -452,6 +520,11 @@ if signals:
         "momentum_5m",
         "momentum_15m",
         "momentum_acceleration",
+        "signal_memory_state",
+        "signal_persistence",
+        "confidence_delta",
+        "momentum_delta",
+        "volume_delta",
         "vwap_state",
         "vwap_distance",
         "rsi",
