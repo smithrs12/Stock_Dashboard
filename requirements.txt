@@ -1,0 +1,9 @@
+streamlit
+streamlit-autorefresh
+pandas
+numpy
+python-dotenv
+redis
+requests
+alpaca-py
+ta
