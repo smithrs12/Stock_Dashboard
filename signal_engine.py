@@ -3,6 +3,8 @@ from datetime import datetime, timezone
 from config import config
 from indicators import get_indicator_snapshot
 from market_context import get_market_context
+from market_data import get_latest_quote
+from sentiment_engine import get_sentiment_snapshot
 
 
 def clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
@@ -119,7 +121,131 @@ def apply_short_market_context(score: float, regime: str, breakdown: dict, reaso
     return score
 
 
-def score_long_setup(data: dict, context: dict) -> tuple[float, list[str], list[str], dict]:
+def apply_sentiment_to_long(score: float, sentiment: dict, breakdown: dict, reasons: list, risks: list) -> float:
+    sentiment_score = float(sentiment.get("sentiment_score", 0.0))
+    mention_spike = bool(sentiment.get("mention_spike", False))
+    top_catalyst = sentiment.get("top_catalyst")
+    article_count = int(sentiment.get("article_count", 0))
+
+    if sentiment_score >= 0.35:
+        score += 0.10
+        breakdown["sentiment"] += 0.10
+        reasons.append(f"Bullish news sentiment: {sentiment_score:.2f}")
+    elif sentiment_score >= 0.15:
+        score += 0.05
+        breakdown["sentiment"] += 0.05
+        reasons.append(f"Positive news sentiment: {sentiment_score:.2f}")
+    elif sentiment_score <= -0.35:
+        score -= 0.12
+        breakdown["sentiment"] -= 0.12
+        risks.append(f"Bearish news sentiment: {sentiment_score:.2f}")
+    elif sentiment_score <= -0.15:
+        score -= 0.06
+        breakdown["sentiment"] -= 0.06
+        risks.append(f"Negative news sentiment: {sentiment_score:.2f}")
+
+    if mention_spike and sentiment_score >= 0:
+        score += 0.05
+        breakdown["sentiment"] += 0.05
+        reasons.append("News attention spike detected")
+    elif mention_spike and sentiment_score < 0:
+        score -= 0.04
+        breakdown["sentiment"] -= 0.04
+        risks.append("Negative attention spike detected")
+
+    if article_count >= 3 and top_catalyst:
+        score += 0.03
+        breakdown["sentiment"] += 0.03
+        reasons.append(f"Active catalyst flow detected: {top_catalyst}")
+
+    if top_catalyst in {"offering", "legal"}:
+        score -= 0.10
+        breakdown["sentiment"] -= 0.10
+        risks.append(f"Hostile catalyst for longs: {top_catalyst}")
+    elif top_catalyst in {"earnings", "analyst", "contract", "fda", "mna"} and sentiment_score >= 0:
+        score += 0.04
+        breakdown["sentiment"] += 0.04
+        reasons.append(f"Constructive catalyst for longs: {top_catalyst}")
+
+    return score
+
+
+def apply_sentiment_to_short(score: float, sentiment: dict, breakdown: dict, reasons: list, risks: list) -> float:
+    sentiment_score = float(sentiment.get("sentiment_score", 0.0))
+    mention_spike = bool(sentiment.get("mention_spike", False))
+    top_catalyst = sentiment.get("top_catalyst")
+    article_count = int(sentiment.get("article_count", 0))
+
+    if sentiment_score <= -0.35:
+        score += 0.10
+        breakdown["sentiment"] += 0.10
+        reasons.append(f"Bearish news sentiment: {sentiment_score:.2f}")
+    elif sentiment_score <= -0.15:
+        score += 0.05
+        breakdown["sentiment"] += 0.05
+        reasons.append(f"Negative news sentiment: {sentiment_score:.2f}")
+    elif sentiment_score >= 0.35:
+        score -= 0.12
+        breakdown["sentiment"] -= 0.12
+        risks.append(f"Bullish news sentiment against short: {sentiment_score:.2f}")
+    elif sentiment_score >= 0.15:
+        score -= 0.06
+        breakdown["sentiment"] -= 0.06
+        risks.append(f"Positive news sentiment against short: {sentiment_score:.2f}")
+
+    if mention_spike and sentiment_score <= 0:
+        score += 0.05
+        breakdown["sentiment"] += 0.05
+        reasons.append("Negative news attention spike detected")
+    elif mention_spike and sentiment_score > 0:
+        score -= 0.04
+        breakdown["sentiment"] -= 0.04
+        risks.append("Positive attention spike detected against short")
+
+    if article_count >= 3 and top_catalyst:
+        score += 0.03
+        breakdown["sentiment"] += 0.03
+        reasons.append(f"Active catalyst flow detected: {top_catalyst}")
+
+    if top_catalyst in {"offering", "legal"} and sentiment_score <= 0:
+        score += 0.07
+        breakdown["sentiment"] += 0.07
+        reasons.append(f"Constructive catalyst for shorts: {top_catalyst}")
+    elif top_catalyst in {"earnings", "analyst", "contract", "fda", "mna"} and sentiment_score > 0:
+        score -= 0.05
+        breakdown["sentiment"] -= 0.05
+        risks.append(f"Bullish catalyst against short: {top_catalyst}")
+
+    return score
+
+
+def apply_liquidity_checks(score: float, quote: dict, breakdown: dict, reasons: list, risks: list) -> float:
+    spread_pct = quote.get("spread_pct")
+    mid = quote.get("mid")
+
+    if mid is None or spread_pct is None:
+        score -= 0.10
+        breakdown["liquidity"] -= 0.10
+        risks.append("Quote quality unavailable")
+        return score
+
+    if spread_pct <= 0.0015:
+        score += 0.04
+        breakdown["liquidity"] += 0.04
+        reasons.append(f"Tight spread: {spread_pct:.2%}")
+    elif spread_pct <= config.MAX_SPREAD_PCT:
+        score += 0.01
+        breakdown["liquidity"] += 0.01
+        reasons.append(f"Acceptable spread: {spread_pct:.2%}")
+    else:
+        score -= 0.14
+        breakdown["liquidity"] -= 0.14
+        risks.append(f"Wide spread: {spread_pct:.2%}")
+
+    return score
+
+
+def score_long_setup(data: dict, context: dict, sentiment: dict, quote: dict) -> tuple[float, list[str], list[str], dict]:
     regime = context.get("regime", "unknown")
 
     score = 0.50
@@ -132,6 +258,8 @@ def score_long_setup(data: dict, context: dict) -> tuple[float, list[str], list[
         "volume": 0.0,
         "trend": 0.0,
         "context": 0.0,
+        "sentiment": 0.0,
+        "liquidity": 0.0,
         "risk_reward": 0.0,
         "decay": 0.0,
     }
@@ -248,6 +376,9 @@ def score_long_setup(data: dict, context: dict) -> tuple[float, list[str], list[
         breakdown["context"] -= 0.04
         risks.append(f"Risk-on score weak: {context.get('risk_on_score')}")
 
+    score = apply_sentiment_to_long(score, sentiment, breakdown, reasons, risks)
+    score = apply_liquidity_checks(score, quote, breakdown, reasons, risks)
+
     if data.get("signal_decay"):
         score -= 0.14
         breakdown["decay"] -= 0.14
@@ -256,7 +387,7 @@ def score_long_setup(data: dict, context: dict) -> tuple[float, list[str], list[
     return score, reasons, risks, breakdown
 
 
-def score_short_setup(data: dict, context: dict) -> tuple[float, list[str], list[str], dict]:
+def score_short_setup(data: dict, context: dict, sentiment: dict, quote: dict) -> tuple[float, list[str], list[str], dict]:
     regime = context.get("regime", "unknown")
 
     score = 0.50
@@ -269,6 +400,8 @@ def score_short_setup(data: dict, context: dict) -> tuple[float, list[str], list
         "volume": 0.0,
         "trend": 0.0,
         "context": 0.0,
+        "sentiment": 0.0,
+        "liquidity": 0.0,
         "risk_reward": 0.0,
         "decay": 0.0,
     }
@@ -377,6 +510,14 @@ def score_short_setup(data: dict, context: dict) -> tuple[float, list[str], list
         breakdown["context"] -= 0.04
         risks.append(f"Risk-on score strong, hostile for shorts: {context.get('risk_on_score')}")
 
+    score = apply_sentiment_to_short(score, sentiment, breakdown, reasons, risks)
+    score = apply_liquidity_checks(score, quote, breakdown, reasons, risks)
+
+    if data.get("signal_decay"):
+        score -= 0.12
+        breakdown["decay"] -= 0.12
+        risks.append("Signal decay detected: momentum, volume, or MACD is fading")
+
     return score, reasons, risks, breakdown
 
 
@@ -384,7 +525,7 @@ def choose_direction(long_score: float, short_score: float) -> str:
     if long_score >= config.SIGNAL_MIN_CONFIDENCE and long_score >= short_score + 0.08:
         return "BUY"
 
-    if short_score >= config.SIGNAL_MIN_CONFIDENCE and short_score >= long_score + 0.08:
+    if config.ENABLE_SHORT_SIGNALS and short_score >= config.SIGNAL_MIN_CONFIDENCE and short_score >= long_score + 0.08:
         return "SELL"
 
     return "HOLD"
@@ -399,12 +540,17 @@ def generate_signal(ticker: str, context: dict | None = None) -> dict:
         context = get_market_context()
 
     regime = context.get("regime", "unknown")
+    sentiment = get_sentiment_snapshot(ticker)
+    quote = get_latest_quote(ticker)
 
-    long_score, long_reasons, long_risks, long_breakdown = score_long_setup(data, context)
-    short_score, short_reasons, short_risks, short_breakdown = score_short_setup(data, context)
+    long_score, long_reasons, long_risks, long_breakdown = score_long_setup(data, context, sentiment, quote)
+    short_score, short_reasons, short_risks, short_breakdown = score_short_setup(data, context, sentiment, quote)
 
     long_confidence = clamp(long_score)
     short_confidence = clamp(short_score)
+
+    if not config.ENABLE_SHORT_SIGNALS:
+        short_confidence = 0.0
 
     signal = choose_direction(long_confidence, short_confidence)
 
@@ -434,6 +580,12 @@ def generate_signal(ticker: str, context: dict | None = None) -> dict:
         signal = "HOLD"
         confidence = min(confidence, 0.62)
 
+    spread_pct = quote.get("spread_pct")
+    if signal in {"BUY", "SELL"} and spread_pct is not None and spread_pct > config.MAX_SPREAD_PCT:
+        risks.append(f"Blocked by wide spread: {spread_pct:.2%}")
+        signal = "HOLD"
+        confidence = min(confidence, 0.60)
+
     return {
         "ticker": ticker,
         "signal": signal,
@@ -451,6 +603,15 @@ def generate_signal(ticker: str, context: dict | None = None) -> dict:
         "volatility_level": context.get("volatility_level", "unknown"),
         "risk_on_score": context.get("risk_on_score", 0.0),
 
+        "sentiment_score": round(float(sentiment.get("sentiment_score", 0.0)), 4),
+        "sentiment_label": sentiment.get("sentiment_label", "neutral"),
+        "mention_spike": bool(sentiment.get("mention_spike", False)),
+        "article_count": int(sentiment.get("article_count", 0)),
+        "top_catalyst": sentiment.get("top_catalyst"),
+        "catalyst_flags": sentiment.get("catalyst_flags", []),
+        "recent_headlines": sentiment.get("recent_headlines", []),
+
+        "spread_pct": round(spread_pct, 4) if spread_pct is not None else None,
         "volume_ratio": round(data["volume_ratio"], 2),
         "volume_ratio_60": round(data["volume_ratio_60"], 2),
         "momentum_5m": round(data["momentum_5m"], 4),
