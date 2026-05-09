@@ -10,7 +10,90 @@ st.set_page_config(
     layout="wide",
 )
 
-st_autorefresh(interval=30_000, key="refresh")
+st_autorefresh(interval=15_000, key="refresh")
+
+
+def signal_color(signal: str) -> str:
+    if signal == "BUY":
+        return "#16a34a"
+    if signal == "SELL":
+        return "#dc2626"
+    return "#eab308"
+
+
+def signal_label(signal: str) -> str:
+    if signal == "BUY":
+        return "DING — BUY NOW"
+    if signal == "SELL":
+        return "DING — SELL NOW"
+    return "YELLOW DOT — HOLD"
+
+
+def render_signal_card(item: dict, featured: bool = False):
+    signal = item.get("signal", "HOLD")
+    color = signal_color(signal)
+
+    border_width = "5px" if featured else "2px"
+    font_size = "42px" if featured else "28px"
+
+    st.markdown(
+        f"""
+        <div style="
+            border: {border_width} solid {color};
+            border-radius: 18px;
+            padding: 22px;
+            margin-bottom: 18px;
+            background: rgba(255,255,255,0.03);
+        ">
+            <div style="
+                display: flex;
+                align-items: center;
+                gap: 18px;
+                margin-bottom: 8px;
+            ">
+                <div style="
+                    width: 34px;
+                    height: 34px;
+                    border-radius: 50%;
+                    background: {color};
+                    box-shadow: 0 0 18px {color};
+                "></div>
+                <div style="font-size: {font_size}; font-weight: 800;">
+                    {signal_label(signal)} — {item.get("ticker")}
+                </div>
+            </div>
+            <div style="font-size: 18px; opacity: 0.85;">
+                Confidence: <strong>{item.get("confidence", 0):.2f}</strong>
+                &nbsp; | &nbsp;
+                Price: <strong>{item.get("price")}</strong>
+                &nbsp; | &nbsp;
+                Regime: <strong>{item.get("regime")}</strong>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    cols = st.columns(4)
+    cols[0].metric("Entry", item.get("entry_zone"))
+    cols[1].metric("Stop", item.get("stop"))
+    cols[2].metric("Target", item.get("target"))
+    cols[3].metric("R/R", item.get("risk_reward"))
+
+    with st.expander("Why this signal?"):
+        st.markdown("**Reasons**")
+        for reason in item.get("reasons", []):
+            st.write(f"- {reason}")
+
+        if item.get("risks"):
+            st.markdown("**Risks**")
+            for risk in item.get("risks", []):
+                st.write(f"- {risk}")
+
+        if item.get("breakdown"):
+            st.markdown("**Confidence Breakdown**")
+            st.json(item.get("breakdown"))
+
 
 st.title("Real-Time Trading Intelligence Engine")
 
@@ -19,64 +102,109 @@ signals = store.get_json("live_signals", [])
 high_quality = store.get_json("high_quality_signals", [])
 market_context = store.get_json("market_context", {})
 
+buy_signals = [
+    item for item in signals
+    if item.get("signal") == "BUY"
+]
+
+sell_signals = [
+    item for item in signals
+    if item.get("signal") == "SELL"
+]
+
+hold_signals = [
+    item for item in signals
+    if item.get("signal") == "HOLD"
+]
+
 top_cols = st.columns(4)
 
 top_cols[0].metric("Worker", heartbeat.get("status", "unknown"))
-top_cols[1].metric("Signals", len(signals))
-top_cols[2].metric("High Quality", len(high_quality))
-top_cols[3].metric("Regime", market_context.get("regime", "unknown"))
+top_cols[1].metric("Regime", market_context.get("regime", "unknown"))
+top_cols[2].metric("Buy Signals", len(buy_signals))
+top_cols[3].metric("Sell Signals", len(sell_signals))
 
 st.divider()
 
-st.subheader("High-Quality Setups")
+st.subheader("Primary Action Signal")
 
-if high_quality:
-    for item in high_quality:
-        with st.container(border=True):
-            cols = st.columns([1, 1, 1, 1, 1])
-            cols[0].markdown(f"### {item['ticker']}")
-            cols[1].metric("Signal", item["signal"])
-            cols[2].metric("Confidence", f"{item['confidence']:.2f}")
-            cols[3].metric("Price", item["price"])
-            cols[4].metric("R/R", item["risk_reward"])
+primary = None
 
-            st.markdown("**Reason**")
-            for reason in item.get("reasons", []):
-                st.write(f"- {reason}")
+if buy_signals:
+    primary = sorted(buy_signals, key=lambda x: x.get("confidence", 0), reverse=True)[0]
+elif sell_signals:
+    primary = sorted(sell_signals, key=lambda x: x.get("confidence", 0), reverse=True)[0]
+elif hold_signals:
+    primary = sorted(hold_signals, key=lambda x: x.get("confidence", 0), reverse=True)[0]
 
-            if item.get("risks"):
-                st.markdown("**Risk**")
-                for risk in item.get("risks", []):
-                    st.write(f"- {risk}")
-
-            risk_cols = st.columns(3)
-            risk_cols[0].metric("Entry", item.get("entry_zone"))
-            risk_cols[1].metric("Stop", item.get("stop"))
-            risk_cols[2].metric("Target", item.get("target"))
+if primary:
+    render_signal_card(primary, featured=True)
 else:
-    st.info("No high-quality setups right now.")
+    st.warning("No live signal available yet.")
 
 st.divider()
 
-st.subheader("Live Signals Feed")
+left, middle, right = st.columns(3)
+
+with left:
+    st.subheader("Green Light — Buy Now")
+    if buy_signals:
+        for item in sorted(buy_signals, key=lambda x: x.get("confidence", 0), reverse=True):
+            render_signal_card(item)
+    else:
+        st.info("No buy signals.")
+
+with middle:
+    st.subheader("Yellow Light — Hold / Watch")
+    if hold_signals:
+        for item in sorted(hold_signals, key=lambda x: x.get("confidence", 0), reverse=True)[:10]:
+            render_signal_card(item)
+    else:
+        st.info("No hold signals.")
+
+with right:
+    st.subheader("Red Light — Sell / Avoid")
+    if sell_signals:
+        for item in sorted(sell_signals, key=lambda x: x.get("confidence", 0), reverse=True):
+            render_signal_card(item)
+    else:
+        st.info("No sell signals.")
+
+st.divider()
+
+st.subheader("Full Signal Table")
 
 if signals:
     df = pd.DataFrame(signals)
+
+    preferred_cols = [
+        "ticker",
+        "signal",
+        "confidence",
+        "long_confidence",
+        "short_confidence",
+        "price",
+        "entry_zone",
+        "stop",
+        "target",
+        "risk_reward",
+        "regime",
+        "volume_ratio",
+        "momentum_5m",
+        "momentum_15m",
+        "momentum_acceleration",
+        "vwap_state",
+        "vwap_distance",
+        "rsi",
+        "adx",
+        "signal_decay",
+        "timestamp",
+    ]
+
+    preferred_cols = [col for col in preferred_cols if col in df.columns]
+
     st.dataframe(
-        df[
-            [
-                "ticker",
-                "signal",
-                "confidence",
-                "price",
-                "volume_ratio",
-                "momentum_15m",
-                "vwap_distance",
-                "risk_reward",
-                "regime",
-                "timestamp",
-            ]
-        ],
+        df[preferred_cols].sort_values("confidence", ascending=False),
         use_container_width=True,
         hide_index=True,
     )
