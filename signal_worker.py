@@ -13,6 +13,10 @@ MARKET_TZ = ZoneInfo("America/New_York")
 MARKET_OPEN = dt_time(9, 30)
 MARKET_CLOSE = dt_time(16, 0)
 
+SIGNAL_HISTORY_KEY = "signal_history"
+SIGNAL_HISTORY_LENGTH = 5
+SIGNAL_HISTORY_TTL = 60 * 60 * 6
+
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -65,7 +69,120 @@ def should_trigger_ding(current_alert: dict | None, previous_alert: dict | None)
     ):
         return True
 
+    if current_alert.get("signal_memory_state") == "strengthening":
+        return True
+
     return False
+
+
+def _build_memory_snapshot(signal: dict) -> dict:
+    return {
+        "signal": signal.get("signal"),
+        "confidence": float(signal.get("confidence", 0)),
+        "momentum_5m": float(signal.get("momentum_5m", 0)),
+        "momentum_15m": float(signal.get("momentum_15m", 0)),
+        "momentum_acceleration": float(signal.get("momentum_acceleration", 0)),
+        "volume_ratio": float(signal.get("volume_ratio", 0)),
+        "sentiment_score": float(signal.get("sentiment_score", 0)),
+        "timestamp": signal.get("timestamp", utc_now_iso()),
+    }
+
+
+def _classify_signal_memory(current_signal: dict, prior_history: list[dict]) -> dict:
+    if not prior_history:
+        return {
+            "signal_memory_state": "new",
+            "signal_persistence": 1,
+            "confidence_delta": 0.0,
+            "momentum_delta": 0.0,
+            "volume_delta": 0.0,
+        }
+
+    last = prior_history[-1]
+
+    current_direction = current_signal.get("signal", "HOLD")
+    previous_direction = last.get("signal", "HOLD")
+
+    current_confidence = float(current_signal.get("confidence", 0))
+    previous_confidence = float(last.get("confidence", 0))
+
+    current_momentum = float(current_signal.get("momentum_15m", 0))
+    previous_momentum = float(last.get("momentum_15m", 0))
+
+    current_volume = float(current_signal.get("volume_ratio", 0))
+    previous_volume = float(last.get("volume_ratio", 0))
+
+    confidence_delta = current_confidence - previous_confidence
+    momentum_delta = current_momentum - previous_momentum
+    volume_delta = current_volume - previous_volume
+
+    persistence = 1
+    for snapshot in reversed(prior_history):
+        if snapshot.get("signal") == current_direction:
+            persistence += 1
+        else:
+            break
+
+    if previous_direction != current_direction and current_direction != "HOLD":
+        state = "reversing"
+    elif current_direction == "HOLD":
+        if confidence_delta < -0.03:
+            state = "fading"
+        else:
+            state = "stable"
+    elif (
+        confidence_delta >= 0.03
+        and (
+            (current_direction == "BUY" and momentum_delta >= 0)
+            or (current_direction == "SELL" and momentum_delta <= 0)
+        )
+        and volume_delta >= -0.10
+    ):
+        state = "strengthening"
+    elif confidence_delta <= -0.03 or abs(volume_delta) > 0.35:
+        state = "fading"
+    else:
+        state = "stable"
+
+    return {
+        "signal_memory_state": state,
+        "signal_persistence": persistence,
+        "confidence_delta": round(confidence_delta, 4),
+        "momentum_delta": round(momentum_delta, 4),
+        "volume_delta": round(volume_delta, 4),
+    }
+
+
+def enrich_signals_with_memory(signals: list[dict]) -> tuple[list[dict], dict]:
+    signal_history = store.get_json(SIGNAL_HISTORY_KEY, default={}) or {}
+    updated_history = {}
+
+    enriched = []
+
+    for signal in signals:
+        ticker = signal.get("ticker")
+        if not ticker:
+            continue
+
+        prior_history = signal_history.get(ticker, []) or []
+        memory = _classify_signal_memory(signal, prior_history)
+
+        signal["signal_memory_state"] = memory["signal_memory_state"]
+        signal["signal_persistence"] = memory["signal_persistence"]
+        signal["confidence_delta"] = memory["confidence_delta"]
+        signal["momentum_delta"] = memory["momentum_delta"]
+        signal["volume_delta"] = memory["volume_delta"]
+
+        new_snapshot = _build_memory_snapshot(signal)
+        updated_history[ticker] = (prior_history + [new_snapshot])[-SIGNAL_HISTORY_LENGTH:]
+
+        enriched.append(signal)
+
+    for ticker, history in signal_history.items():
+        if ticker not in updated_history:
+            updated_history[ticker] = history[-SIGNAL_HISTORY_LENGTH:]
+
+    return enriched, updated_history
 
 
 def build_alert_payload(top_signal: dict | None, previous_alert: dict | None) -> dict:
@@ -122,6 +239,11 @@ def build_alert_payload(top_signal: dict | None, previous_alert: dict | None) ->
         "distance_to_support": top_signal.get("distance_to_support"),
         "distance_to_resistance": top_signal.get("distance_to_resistance"),
         "signal_decay": top_signal.get("signal_decay"),
+        "signal_memory_state": top_signal.get("signal_memory_state"),
+        "signal_persistence": top_signal.get("signal_persistence"),
+        "confidence_delta": top_signal.get("confidence_delta"),
+        "momentum_delta": top_signal.get("momentum_delta"),
+        "volume_delta": top_signal.get("volume_delta"),
         "breakdown": top_signal.get("breakdown", {}),
         "reasons": top_signal.get("reasons", []),
         "risks": top_signal.get("risks", []),
@@ -197,6 +319,7 @@ def run_worker():
 
             watchlist = get_active_watchlist(limit=config.WATCHLIST_LIMIT)
             signals = generate_signals(watchlist)
+            signals, signal_history = enrich_signals_with_memory(signals)
 
             high_quality = [
                 signal for signal in signals
@@ -209,6 +332,7 @@ def run_worker():
             top_signal = get_top_actionable_signal(signals)
             latest_alert = build_alert_payload(top_signal, previous_alert)
 
+            store.set_json(SIGNAL_HISTORY_KEY, signal_history, ttl=SIGNAL_HISTORY_TTL)
             store.set_json("live_signals", signals, ttl=180)
             store.set_json("high_quality_signals", high_quality, ttl=180)
             store.set_json("latest_alert", latest_alert, ttl=180)
@@ -224,6 +348,7 @@ def run_worker():
                     "latest_alert": latest_alert.get("message"),
                     "top_catalyst": latest_alert.get("top_catalyst"),
                     "sentiment_label": latest_alert.get("sentiment_label"),
+                    "signal_memory_state": latest_alert.get("signal_memory_state"),
                 },
             )
 
@@ -233,7 +358,8 @@ def run_worker():
                 f"high_quality={len(high_quality)} "
                 f"alert={latest_alert.get('message')} "
                 f"catalyst={latest_alert.get('top_catalyst')} "
-                f"sentiment={latest_alert.get('sentiment_label')}"
+                f"sentiment={latest_alert.get('sentiment_label')} "
+                f"memory={latest_alert.get('signal_memory_state')}"
             )
 
         except Exception as exc:
