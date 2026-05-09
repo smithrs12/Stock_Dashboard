@@ -1,8 +1,14 @@
+import time
+
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 from streamlit_autorefresh import st_autorefresh
 
 from redis_store import store
+
+
+ALERT_COOLDOWN_SECONDS = 30
 
 
 st.set_page_config(
@@ -56,6 +62,73 @@ def render_sentiment_chip(label: str, score: float):
         </div>
         """,
         unsafe_allow_html=True,
+    )
+
+
+def maybe_play_alert_sound(latest_alert: dict):
+    if "last_ding_key" not in st.session_state:
+        st.session_state.last_ding_key = None
+
+    if "last_ding_ts" not in st.session_state:
+        st.session_state.last_ding_ts = 0.0
+
+    if not latest_alert or not latest_alert.get("active"):
+        return
+
+    if latest_alert.get("signal") not in {"BUY", "SELL"}:
+        return
+
+    if not latest_alert.get("should_ding"):
+        return
+
+    alert_key = (
+        f"{latest_alert.get('ticker')}|"
+        f"{latest_alert.get('signal')}|"
+        f"{latest_alert.get('confidence')}|"
+        f"{latest_alert.get('timestamp')}"
+    )
+
+    now_ts = time.time()
+    within_cooldown = (now_ts - st.session_state.last_ding_ts) < ALERT_COOLDOWN_SECONDS
+
+    if st.session_state.last_ding_key == alert_key or within_cooldown:
+        return
+
+    st.session_state.last_ding_key = alert_key
+    st.session_state.last_ding_ts = now_ts
+
+    components.html(
+        """
+        <script>
+        const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+        if (AudioContextClass) {
+            const ctx = new AudioContextClass();
+
+            function beep(freq, start, duration, gainValue) {
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+
+                osc.type = "sine";
+                osc.frequency.value = freq;
+
+                gain.gain.setValueAtTime(0.0001, start);
+                gain.gain.exponentialRampToValueAtTime(gainValue, start + 0.01);
+                gain.gain.exponentialRampToValueAtTime(0.0001, start + duration);
+
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+
+                osc.start(start);
+                osc.stop(start + duration + 0.02);
+            }
+
+            const t = ctx.currentTime + 0.02;
+            beep(880, t, 0.10, 0.08);
+            beep(1175, t + 0.14, 0.14, 0.08);
+        }
+        </script>
+        """,
+        height=0,
     )
 
 
@@ -272,6 +345,7 @@ high_quality = store.get_json("high_quality_signals", [])
 market_context = store.get_json("market_context", {})
 latest_alert = store.get_json("latest_alert", {})
 
+maybe_play_alert_sound(latest_alert)
 render_latest_alert(latest_alert)
 
 buy_signals = [
